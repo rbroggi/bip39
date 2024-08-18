@@ -28,6 +28,7 @@ $ ./target/debug/bip39 generate -i words.txt -e -o out.bin
 ```shell
 $ ./target/debug/bip39 generate -i words.txt -o out.txt
 ```
+
 #### Create a customized bip39 into stdout
 ```shell
 $ ./target/debug/bip39 generate -i words.txt 
@@ -40,6 +41,11 @@ $ ./target/debug/bip39 decrypt -i out.bin
 into file:
 ```shell
 $ ./target/debug/bip39 decrypt -i out.bin -o my-bip39.txt
+```
+
+#### Create, encrypt, decrypt pipe
+```shell
+$ ./target/debug/bip39 generate -i words.txt | ./target/debug/bip39 encrypt | ./target/debug/bip39 decrypt
 ```
 
 ### Algorithm
