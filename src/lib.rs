@@ -10,7 +10,6 @@ use openssl::symm::{decrypt, encrypt, Cipher};
 use clap::{Command, Arg, ArgMatches};
 use clap::ArgAction::{Append, SetTrue};
 use openssl::rand::rand_bytes;
-use termion::raw::IntoRawMode;
 use argon2::{
     Argon2
 };
@@ -78,8 +77,8 @@ fn parse_configuration_from_args(args: Args) -> Result<Config, Box<dyn std::erro
     let mode: String = matches.get_one::<String>("mode")
         .expect("`mode` is mandatory")
         .to_string();
-    let input_file: Option<String> = matches.get_one::<String>("input-file").map(|s| s.clone());
-    let output_file: Option<String> = matches.get_one::<String>("output-file").map(|s| s.clone());
+    let input_file: Option<String> = matches.get_one::<String>("input-file").cloned();
+    let output_file: Option<String> = matches.get_one::<String>("output-file").cloned();
     let encrypt = matches.get_flag("encrypt-file");
 
 
@@ -124,12 +123,10 @@ fn generate_words(config: GenerateConfig) -> Result<(), Box<dyn std::error::Erro
 
     let mut writer = get_writer(&config.output_file);
 
-    let mut i = 0;
     let mut plaintext = Vec::new();
-    for word in words {
+    for (i, word) in words.into_iter().enumerate() {
         let line = format!("{} {} {:011b} {}\n", word, default_bip39[i], i, i);
         plaintext.append(&mut line.into_bytes());
-        i = i + 1;
     }
 
     if config.encrypt {
@@ -246,7 +243,7 @@ fn decrypt_file(config: DecryptConfig) -> Result<(), Box<dyn std::error::Error>>
     Ok(())
 }
 
-fn decrypt_content(ciphertext: &Vec<u8>, pwd_provider: fn() -> String) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+fn decrypt_content(ciphertext: &[u8], pwd_provider: fn() -> String) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
     let password = pwd_provider();
     let encryption_key = derive_key_from_password(&password)?;
 
@@ -272,25 +269,7 @@ fn get_writer(file_path: &Option<String>) -> Box<dyn Write> {
 }
 
 fn get_secure_password() -> String {
-    let mut stdout = stdout().into_raw_mode().unwrap();
-    let stdin = stdin();
-
-    print!("Enter encryption password: ");
-    stdout.flush().unwrap();
-
-    let mut password = String::new();
-    for c in stdin.bytes() {
-        let byte = c.expect("Failed to read char");
-        if byte == b'\r' || byte == b'\n' {
-            break;
-        }
-        password.push(char::from(byte));
-        print!("*");
-        stdout.flush().unwrap();
-    }
-    println!("");
-
-    password
+    rpassword::prompt_password("enter password: ").unwrap()
 }
 
 fn derive_key_from_password(password: &str) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
@@ -301,7 +280,7 @@ fn derive_key_from_password(password: &str) -> Result<Vec<u8>, Box<dyn std::erro
     if let Err(error) = argon2.hash_password_into(password.as_bytes(), &salt[..], &mut out[..]) {
         return Err(Box::new(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
-            format!("argon2 error {}", error.to_string()),
+            format!("argon2 error {}", error),
         )));
     }
     Ok(out.to_vec())
