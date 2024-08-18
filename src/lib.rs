@@ -80,7 +80,7 @@ fn parse_configuration_from_args(args: Args) -> Result<Config, Box<dyn std::erro
         .to_string();
     let input_file: Option<String> = matches.get_one::<String>("input-file").map(|s| s.clone());
     let output_file: Option<String> = matches.get_one::<String>("output-file").map(|s| s.clone());
-    let encrypt= matches.get_flag("encrypt-file");
+    let encrypt = matches.get_flag("encrypt-file");
 
 
     match mode.as_str() {
@@ -133,7 +133,7 @@ fn generate_words(config: GenerateConfig) -> Result<(), Box<dyn std::error::Erro
     }
 
     if config.encrypt {
-        let ciphertext = encrypt_content(&plaintext)?;
+        let ciphertext = encrypt_content(&plaintext, get_secure_password)?;
         writer.write_all(&ciphertext)?;
     } else {
         writer.write_all(&plaintext)?;
@@ -208,23 +208,30 @@ fn encrypt_file(config: EncryptConfig) -> Result<(), Box<dyn std::error::Error>>
     let mut plaintext = Vec::new();
     reader.read_to_end(&mut plaintext)?;
 
-    let ciphertext = encrypt_content(&plaintext)?;
+    let ciphertext = encrypt_content(&plaintext, get_secure_password)?;
 
     writer.write_all(&ciphertext)?;
     Ok(())
 }
 
-fn encrypt_content(plaintext: &Vec<u8>) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
-    let password = get_secure_password();
-    let encryption_key = derive_key_from_password(&password);
+fn encrypt_content(
+    plaintext: &Vec<u8>,
+    pwd_provider: fn() -> String,
+) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    let password = pwd_provider();
+    let encryption_key = derive_key_from_password(&password)?;
 
     let mut iv = generate_iv(IV_SIZE);
 
-    let mut encrypted = encrypt(Cipher::aes_256_cbc(), encryption_key.as_slice(), Some(&iv), plaintext.as_slice())?;
+    let mut ciphertext = encrypt(
+        Cipher::aes_256_cbc(),
+        encryption_key.as_slice(),
+        Some(&iv),
+        plaintext.as_slice())?;
 
-    encrypted.append(&mut iv);
+    ciphertext.append(&mut iv);
 
-    Ok(encrypted)
+    Ok(ciphertext)
 }
 
 fn decrypt_file(config: DecryptConfig) -> Result<(), Box<dyn std::error::Error>> {
@@ -234,16 +241,20 @@ fn decrypt_file(config: DecryptConfig) -> Result<(), Box<dyn std::error::Error>>
     let mut ciphertext = Vec::new();
     reader.read_to_end(&mut ciphertext)?;
 
+    let plaintext = decrypt_content(&ciphertext, get_secure_password)?;
+    writer.write_all(&plaintext)?;
+    Ok(())
+}
+
+fn decrypt_content(ciphertext: &Vec<u8>, pwd_provider: fn() -> String) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    let password = pwd_provider();
+    let encryption_key = derive_key_from_password(&password)?;
+
     let iv = &ciphertext[ciphertext.len() - IV_SIZE..];
-
-    let password = get_secure_password();
-    let encryption_key = derive_key_from_password(&password);
-
     let ciphertext = &ciphertext[..ciphertext.len() - IV_SIZE];
 
     let plaintext = decrypt(Cipher::aes_256_cbc(), &encryption_key, Some(iv), ciphertext)?;
-    writer.write_all(&plaintext)?;
-    Ok(())
+    Ok(plaintext)
 }
 
 fn get_reader(file_path: &Option<String>) -> Box<dyn BufRead> {
@@ -282,11 +293,30 @@ fn get_secure_password() -> String {
     password
 }
 
-fn derive_key_from_password(password: &str) -> Vec<u8> {
+fn derive_key_from_password(password: &str) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
     let salt = generate_salt(password);
     let argon2 = Argon2::default();
     let mut out = [0u8; 32];
     // Hash password to PHC string ($argon2id$v=19$...)
-    argon2.hash_password_into(password.as_bytes(), &salt[..], &mut out[..]).expect("hash should work");
-    out.to_vec()
+    if let Err(error) = argon2.hash_password_into(password.as_bytes(), &salt[..], &mut out[..]) {
+        return Err(Box::new(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("argon2 error {}", error.to_string()),
+        )));
+    }
+    Ok(out.to_vec())
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::{decrypt_content, encrypt_content};
+
+    #[test]
+    fn encrypt_decrypt() {
+        let pwd_provider = || return "a % convoluted $ PWD".to_string();
+        let plaintext = b"Some plaintext".to_vec();
+        let ciphertext = encrypt_content(&plaintext, pwd_provider).unwrap();
+        let got = decrypt_content(&ciphertext, pwd_provider).unwrap();
+        assert_eq!(plaintext, got)
+    }
 }
