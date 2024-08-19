@@ -2,117 +2,65 @@ mod bip39;
 
 use crate::bip39::default_bip39;
 use std::collections::{HashSet};
-use std::env::Args;
 use std::fs::File;
 use std::io::{stdin, stdout, BufRead, BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 use rand::Rng;
 use openssl::symm::{decrypt, encrypt, Cipher};
-use clap::{Command, Arg, ArgMatches};
-use clap::ArgAction::{Append, SetTrue};
 use openssl::rand::rand_bytes;
 use argon2::{
     Argon2
 };
 use sha2::{Sha256, Digest};
+use structopt::StructOpt;
 
-#[derive(Debug)]
-struct GenerateConfig {
+#[derive(Debug, StructOpt)]
+#[structopt(name = "bip39", about = "Generates a custom bip39 word map")]
+enum Bip39Command {
+    #[structopt(about = "Generate a new random personal bip39 word map")]
+    Generate(GenerateArgs),
+    #[structopt(about = "Encrypt a file")]
+    Encrypt(EncryptArgs),
+    #[structopt(about = "Decrypt a file")]
+    Decrypt(DecryptArgs),
+}
+
+#[derive(Debug, StructOpt)]
+struct GenerateArgs {
+    #[structopt(short, long)]
     input_file: Option<String>,
+    #[structopt(short, long)]
     output_file: Option<String>,
+    #[structopt(short, long)]
     encrypt: bool,
 }
 
-#[derive(Debug)]
-struct EncryptConfig {
+#[derive(Debug, StructOpt)]
+struct EncryptArgs {
+    #[structopt(short, long)]
     input_file: Option<String>,
+    #[structopt(short, long)]
     output_file: Option<String>,
 }
 
-#[derive(Debug)]
-struct DecryptConfig {
+#[derive(Debug, StructOpt)]
+struct DecryptArgs {
+    #[structopt(short, long)]
     input_file: Option<String>,
+    #[structopt(short, long)]
     output_file: Option<String>,
 }
 
-#[derive(Debug)]
-enum Config {
-    Generate(GenerateConfig),
-    Encrypt(EncryptConfig),
-    Decrypt(DecryptConfig),
-}
+pub fn run() -> Result<(), Box<dyn std::error::Error>> {
+    let cfg= Bip39Command::from_args();
 
-pub fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
-    let cfg = parse_configuration_from_args(args)?;
     match cfg {
-        Config::Generate(gen_config) => generate_words(gen_config),
-        Config::Encrypt(encrypt_config) => encrypt_file(encrypt_config),
-        Config::Decrypt(decrypt_config) => decrypt_file(decrypt_config),
+        Bip39Command::Generate(gen_config) => generate_words(gen_config),
+        Bip39Command::Encrypt(encrypt_config) => encrypt_file(encrypt_config),
+        Bip39Command::Decrypt(decrypt_config) => decrypt_file(decrypt_config),
     }
 }
 
-fn parse_configuration_from_args(args: Args) -> Result<Config, Box<dyn std::error::Error>> {
-    let matches: ArgMatches = Command::new("bip39")
-        .about("Custom bip39")
-        .arg(Arg::new("mode")
-            .required(true)
-            .index(1)
-            .help("Mode of operation (generate, encrypt, decrypt)"))
-        .arg(Arg::new("input-file")
-            .short('i')
-            .long("input-file")
-            .action(Append)
-            .help("Input file"))
-        .arg(Arg::new("output-file")
-            .short('o')
-            .long("output-file")
-            .action(Append)
-            .help("Output file"))
-        .arg(Arg::new("encrypt-file")
-            .short('e')
-            .long("encrypt-file")
-            .action(SetTrue)
-            .help("Encrypt file"))
-        .get_matches_from(args);
-
-    let mode: String = matches.get_one::<String>("mode")
-        .expect("`mode` is mandatory")
-        .to_string();
-    let input_file: Option<String> = matches.get_one::<String>("input-file").cloned();
-    let output_file: Option<String> = matches.get_one::<String>("output-file").cloned();
-    let encrypt = matches.get_flag("encrypt-file");
-
-
-    match mode.as_str() {
-        "generate" => {
-            let config = GenerateConfig {
-                input_file,
-                output_file,
-                encrypt,
-            };
-            Ok(Config::Generate(config))
-        }
-        "encrypt" => {
-            let config = EncryptConfig {
-                input_file,
-                output_file,
-            };
-            Ok(Config::Encrypt(config))
-        }
-        "decrypt" => {
-            let config = DecryptConfig {
-                input_file,
-                output_file,
-            };
-            Ok(Config::Decrypt(config))
-        }
-        _ => Err(Box::new(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            "Invalid mode",
-        ))),
-    }
-}
-
-fn generate_words(config: GenerateConfig) -> Result<(), Box<dyn std::error::Error>> {
+fn generate_words(config: GenerateArgs) -> Result<(), Box<dyn std::error::Error>> {
     let dictionary_file = config.input_file.unwrap_or_else(|| String::from("words.txt"));
     let default_bip39 = default_bip39();
     let sample_size = default_bip39.len(); // Adjust the sample size as needed
@@ -198,7 +146,7 @@ fn generate_salt(pwd: &str) -> Vec<u8> {
 }
 
 const IV_SIZE: usize = 16;
-fn encrypt_file(config: EncryptConfig) -> Result<(), Box<dyn std::error::Error>> {
+fn encrypt_file(config: EncryptArgs) -> Result<(), Box<dyn std::error::Error>> {
     let mut reader = get_reader(&config.input_file);
     let mut writer = get_writer(&config.output_file);
 
@@ -231,7 +179,7 @@ fn encrypt_content(
     Ok(ciphertext)
 }
 
-fn decrypt_file(config: DecryptConfig) -> Result<(), Box<dyn std::error::Error>> {
+fn decrypt_file(config: DecryptArgs) -> Result<(), Box<dyn std::error::Error>> {
     let mut reader = get_reader(&config.input_file);
     let mut writer = get_writer(&config.output_file);
 
