@@ -1,7 +1,7 @@
 mod bip39;
 
 use crate::bip39::default_bip39;
-use std::collections::{BTreeSet};
+use std::collections::{HashSet};
 use std::env::Args;
 use std::fs::File;
 use std::io::{stdin, stdout, BufRead, BufReader, BufWriter, Read, Seek, SeekFrom, Write};
@@ -139,7 +139,7 @@ fn generate_words(config: GenerateConfig) -> Result<(), Box<dyn std::error::Erro
     Ok(())
 }
 
-fn read_random_lines(file_path: &str, sample_size: usize, min_length: usize, max_length: usize) -> Result<BTreeSet<String>, std::io::Error> {
+fn read_random_lines(file_path: &str, sample_size: usize, min_length: usize, max_length: usize) -> Result<HashSet<String>, std::io::Error> {
     let mut rng = rand::thread_rng();
     let file = File::open(file_path)?;
 
@@ -148,7 +148,7 @@ fn read_random_lines(file_path: &str, sample_size: usize, min_length: usize, max
 
     let mut reader = BufReader::new(file);
 
-    let mut words: BTreeSet<String> = BTreeSet::new();
+    let mut words: HashSet<String> = HashSet::new();
 
     while words.len() < sample_size {
         // Generate a random offset within the file
@@ -168,7 +168,7 @@ fn read_random_lines(file_path: &str, sample_size: usize, min_length: usize, max
             continue;
         }
         line = line.trim().to_string();
-        if max_length < line.len() || min_length > line.len() || line.contains('\'') || contains_uppercase(&line) || !only_ascii(&line) {
+        if max_length < line.len() || min_length > line.len() || line.contains('\'') || contains_uppercase(&line) || !only_ascii(&line) || line.is_empty() {
             continue;
         }
         words.insert(line);
