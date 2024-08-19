@@ -22,30 +22,30 @@ is a word.
 
 #### Create a customized bip39 encrypted file (recommended)
 ```shell
-$ ./target/debug/bip39 generate -i words.txt -e -o out.bin 
+$ bip39 generate -i words.txt -e -o out.bin 
 ```
 #### Create a customized bip39 not encrypted
 ```shell
-$ ./target/debug/bip39 generate -i words.txt -o out.txt
+$ bip39 generate -i words.txt -o out.txt
 ```
 
 #### Create a customized bip39 into stdout
 ```shell
-$ ./target/debug/bip39 generate -i words.txt 
+$ bip39 generate -i words.txt 
 ```
 
 ### Decrypt your encrypted file
 ```shell
-$ ./target/debug/bip39 decrypt -i out.bin
+$ bip39 decrypt -i out.bin
 ```
 into file:
 ```shell
-$ ./target/debug/bip39 decrypt -i out.bin -o my-bip39.txt
+$ bip39 decrypt -i out.bin -o my-bip39.txt
 ```
 
 #### Create, encrypt, decrypt pipe
 ```shell
-$ ./target/debug/bip39 generate -i words.txt | ./target/debug/bip39 encrypt | ./target/debug/bip39 decrypt
+$ bip39 generate -i words.txt | bip39 encrypt | bip39 decrypt
 ```
 
 ### Algorithm
