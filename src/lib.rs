@@ -3,6 +3,7 @@ mod bip39;
 use crate::bip39::default_bip39;
 use std::collections::{HashSet, HashMap};
 use std::error::Error;
+use std::fmt;
 use std::fs::File;
 use std::io::{stdin, stdout, BufRead, BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 use rand::Rng;
@@ -105,7 +106,7 @@ fn validate_bip39(config: ValidateArgs) -> Result<(), Box<dyn Error>> {
     }
 
     // parse raw_key by only considering the first 11 bits of each element into a Vec<u8>
-    let key_bytes = parse_u16_to_u8(raw_key);
+    let key_bytes = parse_u16_to_u8(raw_key)?;
 
     // see if the key respects checksum
     let mut hasher = Sha256::new();
@@ -121,7 +122,13 @@ fn validate_bip39(config: ValidateArgs) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-fn parse_u16_to_u8(input: Vec<u16>) -> Vec<u8> {
+// parse a Vec<u16> into a Vec<u8> by considering only the first 11 bits of each element
+// considering that every u16 element is a 11 bit number, the total number of bits in the input should be a multiple of 8.
+fn parse_u16_to_u8(input: Vec<u16>) -> Result<Vec<u8>, ParseError> {
+    if input.len() * 11 % 8 != 0 {
+        return Err(ParseError::InvalidInputSize);
+    }
+
     let mut result = Vec::with_capacity(32);
     let mut current_byte = 0u8;
     let mut vacant_bits_in_current_byte = 8;
@@ -154,7 +161,7 @@ fn parse_u16_to_u8(input: Vec<u16>) -> Vec<u8> {
         }
     }
 
-    result
+    Ok(result)
 }
 
 fn parse_custom_bip39_content(content: Vec<u8>) -> Result<HashMap<String, u16>, Box<dyn std::error::Error>> {
@@ -347,9 +354,24 @@ fn derive_key_from_password(password: &str) -> Result<Vec<u8>, Box<dyn std::erro
     Ok(out.to_vec())
 }
 
+#[derive(Debug, PartialEq)]
+enum ParseError {
+    InvalidInputSize,
+}
+
+impl fmt::Display for ParseError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ParseError::InvalidInputSize => write!(f, "Invalid input size"),
+        }
+    }
+}
+
+impl std::error::Error for ParseError {}
+
 #[cfg(test)]
 mod tests {
-    use crate::{decrypt_content, encrypt_content, parse_u16_to_u8};
+    use crate::{decrypt_content, encrypt_content, parse_u16_to_u8, ParseError};
 
     #[test]
     fn encrypt_decrypt() {
@@ -385,7 +407,27 @@ mod tests {
             0b10000000,
             0b00001000,
         ];
-        let got = parse_u16_to_u8(input);
+        let got = parse_u16_to_u8(input).unwrap();
         assert_eq!(expected, got);
     }
+
+
+    #[test]
+    fn test_parse_u16_to_u8_err_size() {
+        let input: Vec<u16> = vec![
+            0b10000000000,
+            0b01000000000,
+            0b00100000000,
+            0b00010000000,
+            0b00001000000,
+            0b00000100000,
+            0b00000010000,
+            0b00000001000,
+            0b00000000100,
+        ];
+        let got = parse_u16_to_u8(input);
+        assert_eq!(Err(ParseError::InvalidInputSize), got);
+    }
 }
+
+
