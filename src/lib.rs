@@ -131,13 +131,19 @@ fn parse_u16_to_u8(input: Vec<u16>) -> Vec<u8> {
         // we are going to fill the current_byte one or more times and push it to the result
         let mut remaining_bits_to_consume = 11;
         while remaining_bits_to_consume > 0 {
+            // will fill current_byte with min of vacant_bits_in_current_byte and remaining_bits_to_consume
             let to_fill = std::cmp::min(vacant_bits_in_current_byte, remaining_bits_to_consume);
-            // extract to_fill bits from eleven_bits starting from the left on remainint_bits_to_consume while maintaining them in the least significant bits
-            // zeroing out all to the left of remaining bits to consume
+            // extract to_fill bits from eleven_bits
+            // 1. consider only bits to the right for remaining bits
+            // 2. shift right to exclude all bits that are beyond to_fill
             let mut to_fill_bits = eleven_bits & ((1 << remaining_bits_to_consume) - 1);
             // shifting right to_fill_bits to the right to fill the current_byte
-            to_fill_bits = to_fill_bits >> remaining_bits_to_consume - to_fill;
+            to_fill_bits = to_fill_bits >> (remaining_bits_to_consume - to_fill);
+
+            // fill the current_byte with to_fill_bits by appending to_fill bites to the right of the vacant bits
             current_byte |= (to_fill_bits << (vacant_bits_in_current_byte - to_fill)) as u8;
+
+            // update the remaining bits to consume and the vacant bits in the current byte
             remaining_bits_to_consume -= to_fill;
             vacant_bits_in_current_byte -= to_fill;
             if vacant_bits_in_current_byte == 0 {
