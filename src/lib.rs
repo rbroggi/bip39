@@ -1,7 +1,8 @@
 mod bip39;
 
 use crate::bip39::default_bip39;
-use std::collections::{HashSet};
+use std::collections::{HashSet, HashMap};
+use std::error::Error;
 use std::fs::File;
 use std::io::{stdin, stdout, BufRead, BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 use rand::Rng;
@@ -22,6 +23,8 @@ enum Bip39Command {
     Encrypt(EncryptArgs),
     #[structopt(about = "Decrypt a file")]
     Decrypt(DecryptArgs),
+    #[structopt(about = "Validate a bip39 word map")]
+    Validate(ValidateArgs),
 }
 
 #[derive(Debug, StructOpt)]
@@ -50,6 +53,15 @@ struct DecryptArgs {
     output_file: Option<String>,
 }
 
+
+#[derive(Debug, StructOpt)]
+struct ValidateArgs {
+    #[structopt(short, long)]
+    bip_file: String,
+    #[structopt(short, long)]
+    key_file: String,
+}
+
 pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     let cfg= Bip39Command::from_args();
 
@@ -57,7 +69,102 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
         Bip39Command::Generate(gen_config) => generate_words(gen_config),
         Bip39Command::Encrypt(encrypt_config) => encrypt_file(encrypt_config),
         Bip39Command::Decrypt(decrypt_config) => decrypt_file(decrypt_config),
+        Bip39Command::Validate(validate_config) => validate_bip39(validate_config),
     }
+}
+
+fn validate_bip39(config: ValidateArgs) -> Result<(), Box<dyn Error>> {
+    let mut reader = get_reader(&Some(config.bip_file));
+
+    let mut ciphertext = Vec::new();
+    reader.read_to_end(&mut ciphertext)?;
+
+    let plaintext = decrypt_content(&ciphertext, get_secure_password)?;
+
+    let custom_bip39 = parse_custom_bip39_content(plaintext)?;
+
+    if custom_bip39.len() != 2048 {
+        return Err("Invalid number of words".into());
+    }
+
+    let reader = get_reader(&Some(config.key_file));
+    // parse the key file, it should have exactly 24 lines and every line should contain a single word which is part of the custom bip39 word map
+    let mut key = Vec::new();
+    for line in reader.lines() {
+        key.push(line?);
+    }
+
+    if key.len() != 24 {
+        return Err("Invalid number of words in the key file".into());
+    }
+
+    let mut raw_key: Vec<u16> = Vec::new();
+    for  word in key.iter() {
+        let element = custom_bip39.get(word).expect("word not found in the custom bip39 word map");
+        raw_key.push(*element);
+    }
+
+    // parse raw_key by only considering the first 11 bits of each element into a Vec<u8>
+    let key_bytes = parse_u16_to_u8(raw_key);
+
+    // see if the key respects checksum
+    let mut hasher = Sha256::new();
+    hasher.update(&key_bytes[..key_bytes.len() - 1]);
+    let hash = hasher.finalize();
+    // the checksum is the first 8 bits of the hash
+    let checksum = hash[0];
+    if checksum != key_bytes[key_bytes.len() - 1] {
+        return Err("Invalid checksum".into());
+    }
+
+    eprintln!("valid key according to the custom bip39 word map");
+    Ok(())
+}
+
+fn parse_u16_to_u8(input: Vec<u16>) -> Vec<u8> {
+    let mut result = Vec::with_capacity(32);
+    let mut current_byte = 0u8;
+    let mut vacant_bits_in_current_byte = 8;
+
+    for &num in &input {
+        let eleven_bits = num & 0x07FF; // Extract the first 11 bits
+        // we are going to fill the current_byte one or more times and push it to the result
+        let mut remaining_bits_to_consume = 11;
+        while remaining_bits_to_consume > 0 {
+            let to_fill = std::cmp::min(vacant_bits_in_current_byte, remaining_bits_to_consume);
+            // extract to_fill bits from eleven_bits starting from the left on remainint_bits_to_consume while maintaining them in the least significant bits
+            // zeroing out all to the left of remaining bits to consume
+            let mut to_fill_bits = eleven_bits & ((1 << remaining_bits_to_consume) - 1);
+            // shifting right to_fill_bits to the right to fill the current_byte
+            to_fill_bits = to_fill_bits >> remaining_bits_to_consume - to_fill;
+            current_byte |= (to_fill_bits << (vacant_bits_in_current_byte - to_fill)) as u8;
+            remaining_bits_to_consume -= to_fill;
+            vacant_bits_in_current_byte -= to_fill;
+            if vacant_bits_in_current_byte == 0 {
+                result.push(current_byte);
+                current_byte = 0;
+                vacant_bits_in_current_byte = 8;
+            }
+        }
+    }
+
+    result
+}
+
+fn parse_custom_bip39_content(content: Vec<u8>) -> Result<HashMap<String, u16>, Box<dyn std::error::Error>> {
+    let content_str = std::str::from_utf8(&content)?;
+    let mut map: HashMap<String, u16> = HashMap::new();
+
+    for line in content_str.lines() {
+        let words: Vec<&str> = line.split_whitespace().collect();
+        if words.len() == 4 {
+            let key = words[0].to_string();
+            let value: u16 = words[3].parse().unwrap_or(0);
+            map.insert(key, value);
+        }
+    }
+
+    Ok(map)
 }
 
 fn generate_words(config: GenerateArgs) -> Result<(), Box<dyn std::error::Error>> {
@@ -236,7 +343,7 @@ fn derive_key_from_password(password: &str) -> Result<Vec<u8>, Box<dyn std::erro
 
 #[cfg(test)]
 mod tests {
-    use crate::{decrypt_content, encrypt_content};
+    use crate::{decrypt_content, encrypt_content, parse_u16_to_u8};
 
     #[test]
     fn encrypt_decrypt() {
@@ -245,5 +352,34 @@ mod tests {
         let ciphertext = encrypt_content(&plaintext, pwd_provider).unwrap();
         let got = decrypt_content(&ciphertext, pwd_provider).unwrap();
         assert_eq!(plaintext, got)
+    }
+
+    #[test]
+    fn test_parse_u16_to_u8() {
+        let input: Vec<u16> = vec![
+            0b10000000000,
+            0b01000000000,
+            0b00100000000,
+            0b00010000000,
+            0b00001000000,
+            0b00000100000,
+            0b00000010000,
+            0b00000001000,
+        ];
+        let expected = vec![
+            0b10000000,
+            0b00001000,
+            0b00000000,
+            0b10000000,
+            0b00001000,
+            0b00000000,
+            0b10000000,
+            0b00001000,
+            0b00000000,
+            0b10000000,
+            0b00001000,
+        ];
+        let got = parse_u16_to_u8(input);
+        assert_eq!(expected, got);
     }
 }
