@@ -7,7 +7,11 @@ use std::fmt;
 use std::fs::File;
 use std::io::{stdin, stdout, BufRead, BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 use rand::Rng;
-use openssl::symm::{decrypt, encrypt, Cipher};
+use aes_gcm::{
+    aead::{Aead, AeadCore, KeyInit, OsRng},
+    Aes256Gcm, Nonce, Key // Or `Aes128Gcm`
+};
+use openssl::symm::{decrypt_aead, encrypt_aead, Cipher};
 use openssl::rand::rand_bytes;
 use argon2::{
     Argon2
@@ -64,7 +68,7 @@ struct ValidateArgs {
 }
 
 pub fn run() -> Result<(), Box<dyn std::error::Error>> {
-    let cfg= Bip39Command::from_args();
+    let cfg = Bip39Command::from_args();
 
     match cfg {
         Bip39Command::Generate(gen_config) => generate_words(gen_config),
@@ -100,7 +104,7 @@ fn validate_bip39(config: ValidateArgs) -> Result<(), Box<dyn Error>> {
     }
 
     let mut raw_key: Vec<u16> = Vec::new();
-    for  word in key.iter() {
+    for word in key.iter() {
         let element = custom_bip39.get(word).expect("word not found in the custom bip39 word map");
         raw_key.push(*element);
     }
@@ -124,9 +128,9 @@ fn validate_bip39(config: ValidateArgs) -> Result<(), Box<dyn Error>> {
 
 // parse a Vec<u16> into a Vec<u8> by considering only the first 11 bits of each element
 // considering that every u16 element is a 11 bit number, the total number of bits in the input should be a multiple of 8.
-fn parse_u16_to_u8(input: Vec<u16>) -> Result<Vec<u8>, ParseError> {
+fn parse_u16_to_u8(input: Vec<u16>) -> Result<Vec<u8>, MyError> {
     if input.len() * 11 % 8 != 0 {
-        return Err(ParseError::InvalidInputSize);
+        return Err(MyError::InvalidInputSize);
     }
 
     let mut result = Vec::with_capacity(32);
@@ -253,7 +257,7 @@ fn contains_uppercase(text: &str) -> bool {
     text.chars().any(|c| c.is_uppercase())
 }
 
-fn generate_iv(iv_length: usize) -> Vec<u8> {
+fn random_generate_bytes(iv_length: usize) -> Vec<u8> {
     let mut iv = vec![0u8; iv_length];
     rand_bytes(&mut iv).unwrap();
     iv
@@ -265,7 +269,9 @@ fn generate_salt(pwd: &str) -> Vec<u8> {
     hasher.finalize().to_vec()
 }
 
-const IV_SIZE: usize = 16;
+const IV_SIZE: usize = 12;
+const AAD_SIZE: usize = 16;
+const TAG_SIZE: usize = 16;
 fn encrypt_file(config: EncryptArgs) -> Result<(), Box<dyn std::error::Error>> {
     let mut reader = get_reader(&config.input_file);
     let mut writer = get_writer(&config.output_file);
@@ -279,6 +285,8 @@ fn encrypt_file(config: EncryptArgs) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+// Encrypts the plaintext using the provided password and returns the ciphertext
+// The output is the concatenation of the ciphertext, IV, AAD, and the tag
 fn encrypt_content(
     plaintext: &Vec<u8>,
     pwd_provider: fn() -> String,
@@ -286,15 +294,22 @@ fn encrypt_content(
     let password = pwd_provider();
     let encryption_key = derive_key_from_password(&password)?;
 
-    let mut iv = generate_iv(IV_SIZE);
+    let mut iv = random_generate_bytes(IV_SIZE);
+    let mut aad = random_generate_bytes(AAD_SIZE);
 
-    let mut ciphertext = encrypt(
-        Cipher::aes_256_cbc(),
+    let mut tag = vec![0u8; TAG_SIZE];
+    let mut ciphertext = encrypt_aead(
+        Cipher::aes_256_gcm(),
         encryption_key.as_slice(),
         Some(&iv),
-        plaintext.as_slice())?;
+        plaintext.as_slice(),
+        &aad,
+        &mut tag,
+    )?;
 
     ciphertext.append(&mut iv);
+    ciphertext.append(&mut aad);
+    ciphertext.append(&mut tag);
 
     Ok(ciphertext)
 }
@@ -315,11 +330,25 @@ fn decrypt_content(ciphertext: &[u8], pwd_provider: fn() -> String) -> Result<Ve
     let password = pwd_provider();
     let encryption_key = derive_key_from_password(&password)?;
 
-    let iv = &ciphertext[ciphertext.len() - IV_SIZE..];
-    let ciphertext = &ciphertext[..ciphertext.len() - IV_SIZE];
+    let start_metadata = ciphertext.len() - IV_SIZE - AAD_SIZE - TAG_SIZE;
+    let iv = &ciphertext[start_metadata..start_metadata + IV_SIZE];
+    let aad = &ciphertext[start_metadata + IV_SIZE..start_metadata + IV_SIZE + AAD_SIZE];
+    let tag = &ciphertext[start_metadata + IV_SIZE + AAD_SIZE..];
 
-    let plaintext = decrypt(Cipher::aes_256_cbc(), &encryption_key, Some(iv), ciphertext)?;
-    Ok(plaintext)
+    let ciphertext = &ciphertext[..start_metadata];
+
+    let plaintext = decrypt_aead(
+        Cipher::aes_256_gcm(),
+        &encryption_key,
+        Some(iv),
+        aad,
+        ciphertext,
+        tag
+    );
+    if plaintext.is_err() {
+        return Err("Invalid password".into());
+    }
+    Ok(plaintext.unwrap())
 }
 
 fn get_reader(file_path: &Option<String>) -> Box<dyn BufRead> {
@@ -340,38 +369,37 @@ fn get_secure_password() -> String {
     rpassword::prompt_password("enter password: ").unwrap()
 }
 
-fn derive_key_from_password(password: &str) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+fn derive_key_from_password(password: &str) -> Result<Vec<u8>, MyError> {
     let salt = generate_salt(password);
     let argon2 = Argon2::default();
     let mut out = [0u8; 32];
     // Hash password to PHC string ($argon2id$v=19$...)
     if let Err(error) = argon2.hash_password_into(password.as_bytes(), &salt[..], &mut out[..]) {
-        return Err(Box::new(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            format!("argon2 error {}", error),
-        )));
+        return Err(MyError::InvalidArgumentArgon2(error.to_string()));
     }
     Ok(out.to_vec())
 }
 
 #[derive(Debug, PartialEq)]
-enum ParseError {
+enum MyError {
     InvalidInputSize,
+    InvalidArgumentArgon2(String),
 }
 
-impl fmt::Display for ParseError {
+impl fmt::Display for MyError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            ParseError::InvalidInputSize => write!(f, "Invalid input size"),
+            MyError::InvalidInputSize => write!(f, "Invalid input size"),
+            MyError::InvalidArgumentArgon2(msg) => write!(f, "Invalid argument for argon2: {}", msg),
         }
     }
 }
 
-impl std::error::Error for ParseError {}
+impl std::error::Error for MyError {}
 
 #[cfg(test)]
 mod tests {
-    use crate::{decrypt_content, encrypt_content, parse_u16_to_u8, ParseError};
+    use crate::{decrypt_content, encrypt_content, parse_u16_to_u8, MyError};
 
     #[test]
     fn encrypt_decrypt() {
@@ -426,7 +454,7 @@ mod tests {
             0b00000000100,
         ];
         let got = parse_u16_to_u8(input);
-        assert_eq!(Err(ParseError::InvalidInputSize), got);
+        assert_eq!(Err(MyError::InvalidInputSize), got);
     }
 }
 
